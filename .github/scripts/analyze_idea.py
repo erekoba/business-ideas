@@ -38,10 +38,9 @@ def extract_tag(tag: str, text: str) -> str:
 
 
 def call_claude(templates: dict) -> dict:
-    template_block = "\n\n".join(
-        f"=== {fname} ===\n{content}" for fname, content in templates.items()
-    )
-    prompt = f"""あなたはビジネスアイデアアナリストです。以下のアイデアを分析し、各テンプレートファイルを具体的な内容で埋めてください。
+    client = anthropic.Anthropic()
+
+    base_context = f"""あなたはビジネスアイデアアナリストです。
 
 ## アイデア
 タイトル: {ISSUE_TITLE}
@@ -53,57 +52,60 @@ def call_claude(templates: dict) -> dict:
 - 競合は実在するサービスを挙げる
 - 収益シミュレーションは保守的・目標・上振れの3シナリオを試算する
 - リスクは楽観的にならず率直に指摘する
-- 「次のアクション」は今すぐ実行できる具体的なステップにする
+- 「次のアクション」は今すぐ実行できる具体的なステップにする"""
 
-## 出力形式
-以下のXMLタグ形式で返してください：
+    def ask(prompt: str) -> str:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=8192,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
 
-<slug>フォルダ名用の短い英語スラッグ（例: subscription-cooking-class）</slug>
+    # slug
+    slug_raw = ask(
+        f"{base_context}\n\nこのアイデアのフォルダ名用の短い英語スラッグを1行だけ返してください（例: subscription-cooking-class）。"
+    )
+    slug = re.sub(r"[^\w-]", "-", slug_raw.lower()).strip("-")
 
-<overview>
-overview.mdの完成内容
-</overview>
-
-<needs>
-needs.mdの完成内容
-</needs>
-
-<revenue>
-revenue.mdの完成内容
-</revenue>
-
-<feasibility>
-feasibility.mdの完成内容
-</feasibility>
-
-<competitors>
-competitors.mdの完成内容
-</competitors>
-
-<score>
-market=4
-competition=3
-revenue=3
-feasibility=4
-technical=5
-</score>
-
-## テンプレート
-{template_block}
-"""
-
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=8192,
-        messages=[{"role": "user", "content": prompt}],
+    # 1. 競合調査（他の分析の土台になるため最初）
+    competitors = ask(
+        f"{base_context}\n\n以下のテンプレートを埋めてください。テンプレートの内容のみ返してください。\n\n{templates['competitors.md']}"
     )
 
-    raw = response.content[0].text
+    # 2. ニーズ調査（競合調査を踏まえて差別化ポイントを反映）
+    needs = ask(
+        f"{base_context}\n\n【競合調査の結果】\n{competitors}\n\n"
+        f"上記の競合調査を踏まえて、以下のテンプレートを埋めてください。テンプレートの内容のみ返してください。\n\n{templates['needs.md']}"
+    )
+
+    # 3. 収益性調査（市場・ニーズを踏まえた価格設定）
+    revenue = ask(
+        f"{base_context}\n\n【ニーズ調査の結果】\n{needs}\n\n"
+        f"上記のニーズ調査を踏まえて、以下のテンプレートを埋めてください。テンプレートの内容のみ返してください。\n\n{templates['revenue.md']}"
+    )
+
+    # 4. 実現性調査（収益性を踏まえた工数・リスク評価）
+    feasibility = ask(
+        f"{base_context}\n\n【収益性調査の結果】\n{revenue}\n\n"
+        f"上記の収益性調査を踏まえて、以下のテンプレートを埋めてください。テンプレートの内容のみ返してください。\n\n{templates['feasibility.md']}"
+    )
+
+    # 5. Overview + スコア（全調査を踏まえて最後に生成）
+    overview_raw = ask(
+        f"{base_context}\n\n"
+        f"【競合調査の結果】\n{competitors}\n\n"
+        f"【ニーズ調査の結果】\n{needs}\n\n"
+        f"【収益性調査の結果】\n{revenue}\n\n"
+        f"【実現性調査の結果】\n{feasibility}\n\n"
+        f"上記すべての調査を踏まえて、overview.mdとスコアを以下の形式で返してください。\n\n"
+        f"<overview>\n{templates['overview.md']}\n</overview>\n\n"
+        f"<score>\nmarket=4\ncompetition=3\nrevenue=3\nfeasibility=4\ntechnical=5\n</score>"
+    )
 
     score_keys = ["market", "competition", "revenue", "feasibility", "technical"]
     score = {k: 0 for k in score_keys}
-    for line in extract_tag("score", raw).splitlines():
+    for line in extract_tag("score", overview_raw).splitlines():
         if "=" in line:
             k, v = line.strip().split("=", 1)
             k = k.strip()
@@ -111,12 +113,12 @@ technical=5
                 score[k] = int(v.strip())
 
     return {
-        "slug": extract_tag("slug", raw),
-        "overview": extract_tag("overview", raw),
-        "needs": extract_tag("needs", raw),
-        "revenue": extract_tag("revenue", raw),
-        "feasibility": extract_tag("feasibility", raw),
-        "competitors": extract_tag("competitors", raw),
+        "slug": slug,
+        "overview": extract_tag("overview", overview_raw),
+        "needs": needs,
+        "revenue": revenue,
+        "feasibility": feasibility,
+        "competitors": competitors,
         "score": score,
     }
 
