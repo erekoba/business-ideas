@@ -32,6 +32,11 @@ def next_idea_number():
     return max(numbers) + 1 if numbers else 1
 
 
+def extract_tag(tag: str, text: str) -> str:
+    m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
 def call_claude(templates: dict) -> dict:
     template_block = "\n\n".join(
         f"=== {fname} ===\n{content}" for fname, content in templates.items()
@@ -51,22 +56,37 @@ def call_claude(templates: dict) -> dict:
 - 「次のアクション」は今すぐ実行できる具体的なステップにする
 
 ## 出力形式
-以下のJSON形式で返してください（マークダウンコードブロック不要）:
-{{
-  "slug": "フォルダ名用の短い英語スラッグ（例: subscription-cooking-class）",
-  "overview": "overview.mdの完成内容",
-  "needs": "needs.mdの完成内容",
-  "revenue": "revenue.mdの完成内容",
-  "feasibility": "feasibility.mdの完成内容",
-  "competitors": "competitors.mdの完成内容",
-  "score": {{
-    "market": 0,
-    "competition": 0,
-    "revenue": 0,
-    "feasibility": 0,
-    "technical": 0
-  }}
-}}
+以下のXMLタグ形式で返してください：
+
+<slug>フォルダ名用の短い英語スラッグ（例: subscription-cooking-class）</slug>
+
+<overview>
+overview.mdの完成内容
+</overview>
+
+<needs>
+needs.mdの完成内容
+</needs>
+
+<revenue>
+revenue.mdの完成内容
+</revenue>
+
+<feasibility>
+feasibility.mdの完成内容
+</feasibility>
+
+<competitors>
+competitors.mdの完成内容
+</competitors>
+
+<score>
+market=4
+competition=3
+revenue=3
+feasibility=4
+technical=5
+</score>
 
 ## テンプレート
 {template_block}
@@ -80,9 +100,22 @@ def call_claude(templates: dict) -> dict:
     )
 
     raw = response.content[0].text
-    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
-    raw = re.sub(r"\s*```$", "", raw)
-    return json.loads(raw)
+
+    score = {}
+    for line in extract_tag("score", raw).splitlines():
+        if "=" in line:
+            k, v = line.strip().split("=", 1)
+            score[k.strip()] = int(v.strip())
+
+    return {
+        "slug": extract_tag("slug", raw),
+        "overview": extract_tag("overview", raw),
+        "needs": extract_tag("needs", raw),
+        "revenue": extract_tag("revenue", raw),
+        "feasibility": extract_tag("feasibility", raw),
+        "competitors": extract_tag("competitors", raw),
+        "score": score,
+    }
 
 
 def create_files(data: dict, idea_num: int) -> str:
