@@ -101,11 +101,14 @@ technical=5
 
     raw = response.content[0].text
 
-    score = {}
+    score_keys = ["market", "competition", "revenue", "feasibility", "technical"]
+    score = {k: 0 for k in score_keys}
     for line in extract_tag("score", raw).splitlines():
         if "=" in line:
             k, v = line.strip().split("=", 1)
-            score[k.strip()] = int(v.strip())
+            k = k.strip()
+            if k in score:
+                score[k] = int(v.strip())
 
     return {
         "slug": extract_tag("slug", raw),
