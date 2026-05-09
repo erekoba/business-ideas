@@ -110,7 +110,7 @@ def call_claude(templates: dict) -> dict:
             k, v = line.strip().split("=", 1)
             k = k.strip()
             if k in score:
-                score[k] = int(v.strip())
+                score[k] = round(float(v.strip()))
 
     return {
         "slug": slug,
