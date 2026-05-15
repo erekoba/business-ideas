@@ -11,8 +11,13 @@ ISSUE_BODY = os.environ.get("ISSUE_BODY", "")
 ISSUE_NUMBER = os.environ["ISSUE_NUMBER"]
 GITHUB_REPO = os.environ["GITHUB_REPOSITORY"]
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+FORMSPREE_FORM_ID = os.environ.get("FORMSPREE_FORM_ID", "")
 TEMPLATE_DIR = "ideas/_template"
 IDEAS_DIR = "ideas"
+DOCS_DIR = "docs/lp"
+
+_repo_owner, _repo_name = GITHUB_REPO.split("/", 1)
+LP_BASE_URL = f"https://{_repo_owner}.github.io/{_repo_name}/lp"
 
 
 def load_templates():
@@ -112,18 +117,126 @@ def call_claude(templates: dict) -> dict:
             if k in score:
                 score[k] = round(float(v.strip()))
 
+    overview = extract_tag("overview", overview_raw)
+
+    # 6. LP コピー生成
+    lp_raw = ask(
+        f"{base_context}\n\n"
+        f"【overview】\n{overview}\n\n"
+        f"【ニーズ調査】\n{needs}\n\n"
+        f"【実現性調査】\n{feasibility}\n\n"
+        "上記の分析をもとに、このサービスの検証用ランディングページのコピーを日本語で作成してください。\n"
+        "以下のJSON形式のみ返してください（説明文や```は不要）:\n\n"
+        '{\n'
+        '  "service_name": "サービス名（短く覚えやすい名前）",\n'
+        '  "headline": "キャッチコピー（課題や価値を一言で、20字以内）",\n'
+        '  "subheadline": "補足説明（2〜3文、具体的なベネフィット）",\n'
+        '  "problem_title": "課題セクションの見出し",\n'
+        '  "problem_body": "ターゲットが抱える課題（2〜3文）",\n'
+        '  "solution_title": "解決策セクションの見出し",\n'
+        '  "solution_body": "このサービスが提供する解決策（2〜3文）",\n'
+        '  "cta_text": "メール登録CTAボタンのテキスト（例: リリースを通知してほしい）"\n'
+        '}'
+    )
+    lp_raw = re.sub(r"^```[a-z]*\n?", "", lp_raw.strip()).rstrip("`").strip()
+    lp_content = json.loads(lp_raw)
+
     return {
         "slug": slug,
-        "overview": extract_tag("overview", overview_raw),
+        "overview": overview,
         "needs": needs,
         "revenue": revenue,
         "feasibility": feasibility,
         "competitors": competitors,
         "score": score,
+        "lp": lp_content,
     }
 
 
-def create_files(data: dict, idea_num: int) -> str:
+def _esc(s: str) -> str:
+    """Escape curly braces for safe use in f-strings / HTML."""
+    return s.replace("{", "&#123;").replace("}", "&#125;")
+
+
+def build_lp_html(lp: dict, slug: str) -> str:
+    sn = _esc(lp["service_name"])
+    hl = _esc(lp["headline"])
+    sub = _esc(lp["subheadline"])
+    pt = _esc(lp["problem_title"])
+    pb = _esc(lp["problem_body"])
+    st = _esc(lp["solution_title"])
+    sb = _esc(lp["solution_body"])
+    cta = _esc(lp["cta_text"])
+
+    if FORMSPREE_FORM_ID:
+        form_html = (
+            f'<form action="https://formspree.io/f/{FORMSPREE_FORM_ID}" method="POST" '
+            'class="flex flex-col sm:flex-row gap-3 max-w-md mx-auto">'
+            '<input type="email" name="email" required placeholder="your@email.com" '
+            'class="flex-1 px-4 py-3 rounded-lg border border-gray-300 focus:outline-none '
+            'focus:ring-2 focus:ring-indigo-500 text-gray-900" />'
+            f'<button type="submit" class="px-6 py-3 bg-indigo-600 text-white font-semibold '
+            f'rounded-lg hover:bg-indigo-700 transition whitespace-nowrap">{cta}</button>'
+            '</form>'
+        )
+    else:
+        form_html = '<p class="text-gray-500 text-sm">近日公開予定です。</p>'
+
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{sn}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-white text-gray-800 font-sans">
+
+  <nav class="px-6 py-4 border-b border-gray-100">
+    <span class="font-bold text-lg text-indigo-600">{sn}</span>
+  </nav>
+
+  <section class="bg-gradient-to-br from-indigo-50 to-white py-20 px-6 text-center">
+    <h1 class="text-4xl sm:text-5xl font-extrabold text-gray-900 leading-tight mb-6">
+      {hl}
+    </h1>
+    <p class="text-lg sm:text-xl text-gray-600 max-w-2xl mx-auto mb-10 leading-relaxed">
+      {sub}
+    </p>
+    <a href="#register"
+      class="inline-block bg-indigo-600 text-white font-semibold px-8 py-4 rounded-full text-lg hover:bg-indigo-700 transition shadow-md">
+      {cta}
+    </a>
+  </section>
+
+  <section class="py-16 px-6 max-w-3xl mx-auto">
+    <h2 class="text-2xl sm:text-3xl font-bold text-gray-900 mb-6">{pt}</h2>
+    <p class="text-gray-600 leading-relaxed text-lg whitespace-pre-line">{pb}</p>
+  </section>
+
+  <section class="py-16 px-6 bg-indigo-50">
+    <div class="max-w-3xl mx-auto">
+      <h2 class="text-2xl sm:text-3xl font-bold text-gray-900 mb-6">{st}</h2>
+      <p class="text-gray-600 leading-relaxed text-lg whitespace-pre-line">{sb}</p>
+    </div>
+  </section>
+
+  <section id="register" class="py-20 px-6 text-center">
+    <h2 class="text-2xl font-bold text-gray-900 mb-3">リリースを通知する</h2>
+    <p class="text-gray-500 mb-8">メールアドレスを登録しておくと、リリース時にお知らせします。</p>
+    {form_html}
+  </section>
+
+  <footer class="py-8 px-6 border-t border-gray-100 text-center text-sm text-gray-400">
+    <p>このサービスは現在開発中です。</p>
+    <p class="mt-1">&copy; 2025 {sn}</p>
+  </footer>
+
+</body>
+</html>"""
+
+
+def create_files(data: dict, idea_num: int) -> tuple[str, str]:
     slug = re.sub(r"[^\w-]", "-", data["slug"].lower()).strip("-")
     folder = f"{IDEAS_DIR}/{idea_num:03d}_{slug}"
     os.makedirs(folder, exist_ok=True)
@@ -138,19 +251,30 @@ def create_files(data: dict, idea_num: int) -> str:
         with open(f"{folder}/{fname}", "w") as f:
             f.write(data[key])
 
-    return folder
+    lp_dir = f"{DOCS_DIR}/{slug}"
+    os.makedirs(lp_dir, exist_ok=True)
+    with open(f"{lp_dir}/index.html", "w") as f:
+        f.write(build_lp_html(data["lp"], slug))
+
+    # Prevent Jekyll from ignoring files starting with _
+    nojekyll = "docs/.nojekyll"
+    if not os.path.exists(nojekyll):
+        open(nojekyll, "w").close()
+
+    return folder, slug
 
 
 def git_commit_and_push(folder: str):
     subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
     subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
-    subprocess.run(["git", "add", folder], check=True)
+    subprocess.run(["git", "add", folder, "docs/"], check=True)
     subprocess.run(["git", "commit", "-m", f"feat: add analysis for {ISSUE_TITLE}"], check=True)
     subprocess.run(["git", "push"], check=True)
 
 
-def post_comment(folder: str, score: dict):
+def post_comment(folder: str, slug: str, score: dict):
     total = sum(score.values())
+    lp_url = f"{LP_BASE_URL}/{slug}/"
     body = f"""## 分析完了 ✅
 
 `{folder}` に分析ファイルを作成しました。
@@ -163,6 +287,11 @@ def post_comment(folder: str, score: dict):
 | 副業実現性 | {score['feasibility']}/5 |
 | 技術実現性 | {score['technical']}/5 |
 | **総合** | **{total}/25** |
+
+### 検証用 LP
+{lp_url}
+
+> GitHub Pages が有効であれば上記 URL でアクセスできます。
 """
 
     req = urllib.request.Request(
@@ -182,9 +311,9 @@ def main():
     templates = load_templates()
     idea_num = next_idea_number()
     data = call_claude(templates)
-    folder = create_files(data, idea_num)
+    folder, slug = create_files(data, idea_num)
     git_commit_and_push(folder)
-    post_comment(folder, data["score"])
+    post_comment(folder, slug, data["score"])
     print(f"Done: {folder}")
 
 
